@@ -1,0 +1,415 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Parameters:
+  ServiceName:
+    Type: String
+    Default: R_POC
+    Description: The name of the ECS service.
+  ContainerCpu:
+    Type: Number
+    Default: 1024
+    Description: How much CPU to give the container. 1024 is 1 CPU.
+  ContainerMemory:
+    Type: Number
+    Default: 2048
+    Description: How much memory in megabytes to give the container.
+  ContainerPort:
+    Type: Number
+    Description: Which port to map from the task's container.
+  InitialTaskCount:
+    Type: Number
+    Default: 1
+    Description: How many tasks should the service initially start?
+  MaxTaskCount:
+    Type: Number
+    Default: 5
+    Description: 'How many tasks should autoscaling scale out to at most?'
+  HealthCheckIntervalSeconds:
+    Type: Number
+    Default: 30
+    Description: The number of seconds between load balancer health checks on targets.
+  HealthCheckPath:
+    Type: String
+    Default: /
+    Description: The path the load balancer should use to check target health.
+  CPUScalingPercentage:
+    Type: Number
+    Default: 50
+    Description: Scale out when CPU utilization reaches this percentage.
+  RequestsPerMinuteScaling:
+    Type: Number
+    Default: 1000
+    Description: Scale out/in as number of requests per minute goes above/below this value.
+
+Resources:
+  Cluster:
+      Type: AWS::ECS::Cluster
+      Properties: {}
+
+  ImageRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryPolicyText:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Sid: AllowPushPull
+            Effect: Allow
+            Principal:
+              AWS: 
+                Fn::ImportValue: !Sub ${AWS::StackName}-CodeBuildRoleArn
+            Action:
+              - ecr:GetDownloadUrlForLayer
+              - ecr:BatchGetImage
+              - ecr:BatchCheckLayerAvailability
+              - ecr:PutImage
+              - ecr:InitiateLayerUpload
+              - ecr:UploadLayerPart
+              - ecr:CompleteLayerUpload
+          -
+            Sid: AllowPull
+            Effect: Allow
+            Principal:
+              AWS:
+                Fn::ImportValue: !Sub ${AWS::StackName}-CloudFormationRoleArn
+            Action:
+              - ecr:BatchCheckLayerAvailability
+              - ecr:BatchGetImage
+              - ecr:GetDownloadUrlForLayer
+
+  # Enables the task's container to perform actions. Here, it allows CloudWatch logs
+  # to be created and written to.
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      PermissionsBoundary: !Sub arn:aws:iam::${AWS::AccountId}:policy/LZ-IAM-Boundary
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [ecs-tasks.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+        - PolicyName: AmazonECSTaskExecutionRolePolicy
+          PolicyDocument:
+            Statement:
+            - Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+                - ecr:*
+              Resource: '*'
+
+  ECSTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      PermissionsBoundary: !Sub arn:aws:iam::${AWS::AccountId}:policy/LZ-IAM-Boundary
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [ecs-tasks.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Policies:
+        - PolicyName: AmazonECSTaskExecutionRolePolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                  - xray:GetSamplingRules
+                  - xray:GetSamplingTargets
+                  - xray:GetSamplingStatisticSummaries
+                Resource: '*'
+
+  # A security group for access from the Lilly network
+  PublicSecurityGroup:
+    Type: Custom::LillySecurityGroup
+    Properties:
+      ServiceToken: !ImportValue RVM-LambdaARN
+      DefinitionName: LillyNetworkHttpAccess
+      VpcId: !ImportValue DefaultVPC
+      Tags:
+        ProjectName: R_POC
+        SystemCustodian: System Custodian User ID
+        SystemOwner: System Owner User ID
+        PrimaryItContact: Primary IT Contact User ID
+        CostCenter: Cost Center ID
+        CostCenterApprover: Cost Center Approver User ID
+        Level1BusinessArea: Business Area ex. Global Services
+        DataClassification: Green
+
+  # A security group for the containers we will run in Fargate.
+  # Two rules, allowing network traffic from a public facing load
+  # balancer, and from other members of the security group.
+  FargateContainerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Access to the Fargate containers
+      VpcId: !ImportValue DefaultVPC
+
+  EcsSecurityGroupIngressFromPublicALB:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Ingress from the public ALB
+      GroupId: !Ref FargateContainerSecurityGroup
+      IpProtocol: '-1'
+      SourceSecurityGroupId: !Ref PublicLoadBalancerSG
+
+  EcsSecurityGroupIngressFromSelf:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Ingress from other containers in the same security group
+      GroupId: !Ref FargateContainerSecurityGroup
+      IpProtocol: '-1'
+      SourceSecurityGroupId: !Ref FargateContainerSecurityGroup
+
+  # A public facing load balancer, this is used for accepting traffic from the public
+  # internet (Lilly network) and directing it to public facing microservices
+  PublicLoadBalancerSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Access to the public facing load balancer
+      VpcId: !ImportValue DefaultVPC
+
+  PublicLoadBalancerIngressFromInternet:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Ingress from the internet
+      GroupId: !Ref PublicLoadBalancerSG
+      IpProtocol: '-1'
+      SourceSecurityGroupId: !Ref PublicLoadBalancerSG
+
+  PublicLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+      - Key: idle_timeout.timeout_seconds
+        Value: '30'
+      # The load balancer is placed into the public subnets, so that traffic
+      # from the internet can reach the load balancer directly 
+      # via the internet gateway
+      Subnets: !Split [ ",",  !ImportValue PublicSubnets ]
+      SecurityGroups: 
+        - !Ref PublicLoadBalancerSG
+        - !GetAtt PublicSecurityGroup.GroupId
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: !Ref HealthCheckIntervalSeconds
+      HealthCheckPath: !Ref HealthCheckPath
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      TargetType: ip
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      VpcId: !ImportValue DefaultVPC
+
+  PublicLoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref TargetGroup
+          Type: 'forward'
+      LoadBalancerArn: !Ref PublicLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+
+  # Defines a task with the CPU, memory, and container image values passed in
+  # via parameters.
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Ref ServiceName
+      Cpu: !Ref ContainerCpu
+      Memory: !Ref ContainerMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ContainerDefinitions:
+        - Name: !Ref ServiceName
+          Image: !Join
+            - ''
+            - - !Ref AWS::AccountId
+              - ".dkr.ecr."
+              - !Ref AWS::Region
+              - ".amazonaws.com/"
+              - !Ref ImageRepository 
+              - ":"
+              - "IMAGE_TAG_PLACEHOLDER"
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-create-group: 'true'
+              awslogs-region: !Ref AWS::Region
+              awslogs-group: !Join
+                - ''
+                - - '/aws/ecs/'
+                  - !Ref Cluster
+              awslogs-stream-prefix: !Ref ServiceName
+        - Name: xray-sidecar
+          Image: 'amazon/aws-xray-daemon'
+          MemoryReservation: 256
+          PortMappings:
+            - ContainerPort: 2000
+              Protocol: udp
+
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: LoadBalancerRule
+    Properties:
+      ServiceName: !Ref ServiceName
+      Cluster: !Ref Cluster
+      LaunchType: FARGATE
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 75
+      DesiredCount: 0
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref FargateContainerSecurityGroup
+          Subnets: !Split [ ",",  !ImportValue PublicSubnets ]
+      TaskDefinition: !Ref TaskDefinition
+      LoadBalancers:
+        - ContainerName: !Ref ServiceName
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref TargetGroup
+
+  # Creates a rule on the load balancer for routing traffic to the target group
+  LoadBalancerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - TargetGroupArn: !Ref TargetGroup
+          Type: forward
+      Conditions:
+        - Field: path-pattern
+          Values: ['*']
+      ListenerArn: !Ref PublicLoadBalancerListener
+      Priority: 1
+
+  # Configures application auto-scaling for the service.
+  # There are two policies: one based on CPU usage that only scales out,
+  # and one based on requests per minute which scales out and in.
+  AutoScalingRole: 
+    Type: AWS::IAM::Role
+    Properties: 
+      PermissionsBoundary: !Sub arn:aws:iam::${AWS::AccountId}:policy/LZ-IAM-Boundary
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+        - Effect: Allow
+          Principal: 
+            Service: [application-autoscaling.amazonaws.com]
+          Action: 
+          - sts:AssumeRole
+      Policies:
+        - 
+            PolicyName: AutoScalingRolePolicy
+            PolicyDocument: 
+              Version: '2012-10-17'
+              Statement: 
+              - Effect: Allow
+                Action:
+                - application-autoscaling:*
+                - ecs:RunTask
+                - ecs:UpdateService
+                - ecs:DescribeServices
+                - cloudwatch:PutMetricAlarm
+                - cloudwatch:DescribeAlarms
+                - cloudwatch:GetMetricStatistics
+                - cloudwatch:SetAlarmState
+                - cloudwatch:DeleteAlarms
+                Resource: '*'
+    
+  AutoScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    DependsOn: Service
+    Properties: 
+      MaxCapacity: !Ref MaxTaskCount
+      MinCapacity: 0
+      ResourceId:
+        !Join
+          - '/'
+          - - service
+            - !Ref Cluster
+            - !Ref ServiceName
+      RoleARN: !GetAtt AutoScalingRole.Arn
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+
+  CPUAutoScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: CPUAutoScalingPolicy
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref AutoScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        DisableScaleIn: True
+        TargetValue: !Ref CPUScalingPercentage
+        ScaleInCooldown: 60
+        ScaleOutCooldown: 60
+        PredefinedMetricSpecification: 
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+
+  RequestsAutoScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: RequestsAutoScalingPolicy
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref AutoScalingTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: ChangeInCapacity
+        Cooldown: 60
+        MetricAggregationType: Average
+        StepAdjustments:
+        - MetricIntervalLowerBound: 0
+          ScalingAdjustment: 1
+        - MetricIntervalUpperBound: 0
+          ScalingAdjustment: -1
+
+  RequestsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      MetricName: !Sub ${ServiceName}RequestCountPerTarget
+      Namespace: AWS/ApplicationELB
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: !Ref RequestsPerMinuteScaling
+      AlarmActions:
+        - !Ref RequestsAutoScalingPolicy
+      OKActions:
+        - !Ref RequestsAutoScalingPolicy
+      Dimensions:
+      - Name: TargetGroup
+        Value: !GetAtt TargetGroup.TargetGroupFullName
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+
+Outputs:
+  ClusterName:
+    Value: !Ref Cluster
+  ServiceName:
+    Value: !Ref Service
+  ImageRepositoryName:
+    Value: !Ref ImageRepository
+  ImageTag:
+    Value: "IMAGE_TAG_PLACEHOLDER"
+  InitialTaskCount:
+    Value: !Ref InitialTaskCount
+  LoadBalancer:
+    Value: !Ref PublicLoadBalancer

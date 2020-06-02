@@ -1,7 +1,0 @@
-needs(ggplot2)
-needs(readxl)
-needs(ggthemes)
-attach(input[[1]])
-Data<- read_excel(first)
-myplot<-ggplot(Data,aes(x=Data$Volume))+geom_line(aes(y=Data$Conductivity))+xlab('Volume')+ylab('Conductivity')
-ggsave(paste(second, "Mean_Plot101.png", sep=""))

@@ -1,0 +1,43 @@
+version: 0.2
+env:
+  variables:
+    STACK_OUTPUTS_FILE: /tmp/codebuild-stack-outputs
+phases:
+  install:
+    runtime-versions:
+      docker: 18
+  pre_build:
+    commands:
+      - echo "Starting pre_build - $(date)"
+
+      - echo "Retrieving stack output values..."
+      - aws cloudformation describe-stacks --stack-name ${STACK_NAME} --query "Stacks[*].Outputs[?OutputKey=='ImageRepositoryName'||OutputKey=='ImageTag'||OutputKey=='ClusterName'||OutputKey=='ServiceName'||OutputKey=='InitialTaskCount']" --output text > ${STACK_OUTPUTS_FILE}
+      - export IMAGE_REPOSITORY_NAME=$(grep ImageRepositoryName ${STACK_OUTPUTS_FILE} | cut -f 2)
+      - export IMAGE_TAG=$(grep ImageTag ${STACK_OUTPUTS_FILE} | cut -f 2)
+      - export CLUSTER_NAME=$(grep ClusterName ${STACK_OUTPUTS_FILE} | cut -f 2)
+      - export SERVICE_NAME=$(grep ServiceName ${STACK_OUTPUTS_FILE} | cut -f 2)
+      - export INITIAL_TASK_COUNT=$(grep InitialTaskCount ${STACK_OUTPUTS_FILE} | cut -f 2)
+
+      - echo "Logging in to Amazon ECR..."
+      - $(aws ecr get-login --no-include-email --region $AWS_REGION)
+
+      - echo "Completed pre_build - $(date)"
+  build:
+    commands:
+      - echo "Starting build - $(date)"
+
+      - echo "Building the Docker image..."
+      - docker build -t ${IMAGE_REPOSITORY_NAME}:${IMAGE_TAG} .
+      - docker tag ${IMAGE_REPOSITORY_NAME}:${IMAGE_TAG} ${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${IMAGE_REPOSITORY_NAME}:${IMAGE_TAG}
+
+      - echo "Completed build - $(date)"
+  post_build:
+    commands:
+      - echo "Starting post_build - $(date)"
+
+      - echo "Pushing the Docker image..."
+      - docker push ${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${IMAGE_REPOSITORY_NAME}:${IMAGE_TAG}
+
+      - echo "Starting the service..."
+      - aws ecs update-service --cluster ${CLUSTER_NAME} --service ${SERVICE_NAME} --desired-count ${INITIAL_TASK_COUNT}
+      - echo "Completed post_build - $(date)"

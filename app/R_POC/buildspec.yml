@@ -1,0 +1,53 @@
+version: 0.2
+phases:
+  install:
+    runtime-versions:
+      python: 3.7
+      nodejs: 10
+    commands:
+      - echo "Starting install - $(date)"
+
+      - echo "Installing CloudFormation template linting tool cfn-lint"
+      - pip install cfn-lint
+
+      - echo "Installing Node dependencies"
+      - cd ${CODEBUILD_SRC_DIR}/app
+      - npm install
+
+      - echo "Completed install - $(date)"
+  pre_build:
+    commands:
+      - echo "Starting pre_build - $(date)"
+      - echo "Completed pre_build - $(date)"
+  build:
+    commands:
+      - echo "Starting build - $(date)"
+
+      - echo "Linting Node source code"
+      - cd ${CODEBUILD_SRC_DIR}/app
+      - npm run lint
+
+      - echo "Testing Node source code"
+      - cd ${CODEBUILD_SRC_DIR}/app
+      - npm test
+
+      - echo "Transforming CloudFormation template"
+      - cd ${CODEBUILD_SRC_DIR}
+      - sed "s/IMAGE_TAG_PLACEHOLDER/$(date -u '+%Y%m%d%H%M%S')/g" ${TEMPLATE_PATH} > /tmp/${TEMPLATE_PATH} && mv /tmp/${TEMPLATE_PATH} ${TEMPLATE_PATH}
+
+      - echo "Linting CloudFormation template"
+      - cd ${CODEBUILD_SRC_DIR}
+      - cfn-lint --version
+      # https://github.com/aws-cloudformation/cfn-python-lint/issues/1265#issuecomment-568525313
+      - cfn-lint --ignore-checks W3011 --append-rules $CODEBUILD_SRC_DIR_LintRules --template ${TEMPLATE_PATH}
+
+      - echo "Completed build - $(date)"
+  post_build:
+    commands:
+      - echo "Starting post_build - $(date)"
+      - echo "Completed post_build - $(date)"
+artifacts:
+  files:
+    - ${TEMPLATE_PATH}
+    - ${PARAMETER_FILE_NAME}
+  discard-paths: no

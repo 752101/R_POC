@@ -1,0 +1,27 @@
+{
+  "Parameters": {
+    "ServiceName": "R_POC",
+    "ContainerCpu": "1024",
+    "ContainerMemory": "2048",
+    "ContainerPort": "80",
+    "InitialTaskCount": "1",
+    "MaxTaskCount": "5",
+    "HealthCheckIntervalSeconds": "30",
+    "HealthCheckPath": "/",
+    "CPUScalingPercentage": "50",
+    "RequestsPerMinuteScaling": "1000"
+  },
+  "Tags": {
+    "DeployEnvironment": "qa",
+    "AppName": "R_POC",
+    "CostCenter": "Cost Center ID",
+    "CostCenterApprover": "Cost Center Approver User ID",
+    "SystemOwner": "System Owner User ID",
+    "SystemCustodian": "System Custodian User ID",
+    "PrimaryItContact": "Primary IT Contact User ID",
+    "Level1BusinessArea": "Business Area ex. Global Services",
+    "DataClassification": "Green",
+    "Hipaa": "Yes"
+  },
+  "StackPolicy": {}
+}
