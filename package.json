@@ -1,0 +1,32 @@
+{
+  "name": "Node_To_HerokuTestApp",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/752101/Node_To_HerokuTestApp.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/752101/Node_To_HerokuTestApp/issues"
+  },
+  "homepage": "https://github.com/752101/Node_To_HerokuTestApp#readme",
+  "dependencies": {
+    "body-parser": "^1.18.3",
+    "express": "^4.16.3",
+    "express-handlebars": "^3.0.0",
+    "formidable": "^1.2.1",
+    "handlebars": "^4.5.1",
+    "pg-promise": "^6.5.2",
+    "r-script": "git+https://git@github.com/khamurdik/r-script.git",
+    "request": "^2.88.0"
+  },
+  "devDependencies": {},
+  "description": ""
+}
