@@ -22,7 +22,7 @@
     "express": "^4.16.3",
     "express-handlebars": "^3.0.0",
     "formidable": "^1.2.1",
-    "handlebars": "^4.5.1",
+    "handlebars": "^4.7.7",
     "pg-promise": "^6.5.2",
     "r-script": "git+https://git@github.com/khamurdik/r-script.git",
     "request": "^2.88.0"
