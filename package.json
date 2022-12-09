@@ -19,7 +19,7 @@
   "homepage": "https://github.com/752101/Node_To_HerokuTestApp#readme",
   "dependencies": {
     "body-parser": "^1.18.3",
-    "express": "^4.16.3",
+    "express": "^4.17.3",
     "express-handlebars": "^3.0.0",
     "formidable": "^1.2.1",
     "handlebars": "^4.5.1",
